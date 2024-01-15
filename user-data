@@ -1,0 +1,129 @@
+#cloud-config
+autoinstall:
+  version: 1
+#Interactive section
+  interactive-sections: [locale, keyboard, network, refresh-installer, drivers, proxy]
+#Select mirror based on your loction for faster package downloads
+  apt-get:
+    preserve_sources_list: false
+    mirror-selection:
+        primary:
+            - country-mirror
+            - arches: [i386, amd64]
+              uri: "http://archive.ubuntu.com/ubuntu"
+            - arches: [s390x, arm64, armhf, powerpc, ppc64el, riscv64]
+              uri: "http://ports.ubuntu.com/ubuntu-ports"
+#Controls what subiquity should do if no primary mirror is usable.
+#revert to an offline installation
+    fallback: offline-install  
+#selects the best mirror based on users location and queries the timezone automatically over the network.
+    geoip: true
+#debconf asks the packages' configuration questions all at once
+  debconf-selections: |
+    bind9   bind9/run-resolvconf    boolean true
+    resolvconf      resolvconf/linkify-resolvconf   boolean true
+    resolvconf      resolvconf/downup-interfaces    note
+#Install available third party drives.
+  drivers: {install: false}
+#Creating admin user - (username:admininstrator passwd:safesquid)
+  identity:
+    username: administrator
+    password: $6$PUJrJhiseThkJDIA$Bn9E6j/tCrLkiS87So2ilFTFI8NE/GtQD10IzxxjwRC9knv/oLFZdlvOn6tLAyqeIHJXIHqd6cp2ibLUPU4pB1
+    hostname: safesquid
+    realname: ''
+#Early command
+#Earlu command is used to autoselect boot method and update the disks to be included for LVM. 
+  early-commands:
+    - curl -sSL https://downloads.safesquid.com/appliance/2204/source/scripts/early.sh -o /tmp/early.sh
+    - /bin/bash /tmp/early.sh
+#Late-commands
+  late-commands:
+#Install SafeSquid after installing kernel, pacakges and creating custom partions
+#Based on attached storage create safesquid's custom LVM partitions.
+    - http_proxy= curtin in-target --target=/target -- /usr/bin/curl -sSL http://downloads.safesquid.com/appliance/2204/source/scripts/appliance_std.sh  -o /root/postinst.sh
+    - curtin in-target --target=/target -- /bin/bash /root/postinst.sh
+#Package update and upgrade
+  package_update: true
+  package_upgrade: true
+#Installing Packages
+  packages: [ aptitude, debconf, debconf-utils, dpkg, perl-base, plymouth-themes, update-motd, tar, zlib1g, vim, wget, curl, rsync, libsasl2-modules-gssapi-heimdal, libcap2-bin, libcap-ng0, libkeepalive0, resolvconf, dns-server^]
+#Install ssh server.
+  ssh: {allow-pw: true, install-server: true}
+#Install ubuntu server minial, This version has been customized to have a small runtime footprint in environments 
+  source:
+      id: ubuntu-server-minimal
+      locale_support: none
+      name:
+        en: Ubuntu Server (minimized)
+      path: ubuntu-server-minimal.squashfs
+      size: 530485248
+      type: fsimage
+      variant: server
+#search for third party drivers
+      search_drivers: true
+#search for third party drivers
+      search_drivers: true
+#Configuring custom storage layout for SafeSquid.
+###########################################################
+##UEFI Boot Storage layout
+  storage_UEFI:
+    swap: {swap: 0}
+    config:
+##Select Disk
+    - {ptable: gpt, match: {}, wipe: superblock-recursive, preserve: false, name: '', grub_device: true, type: disk, id: disk-sda}
+    - {id: additional-disks}
+#UEFI_Boot /boot/efi
+    - {device: disk-sda, size: 512M, number: 1, wipe: superblock, flag: boot, grub_device: true, type: partition, id: partition-0}
+    - {fstype: fat32, volume: partition-0, preserve: false, type: format, id: format-00}
+    - {path: /boot/efi, device: format-00, type: mount, id: mount-00}
+#BIOS_Boot /boot
+    - {device: disk-sda, size: BOOT_SIZE, number: 2, wipe: superblock, flag: '', grub_device: false, type: partition, id: partition-00}
+    - {fstype: ext4, volume: partition-00, preserve: false, type: format, id: format-001}
+    - {path: /boot, device: format-001, type: mount, id: mount-001}
+##Partition to be used for LVM
+    - {device: disk-sda, size: -1, wipe: superblock, flag: '', number: 3, preserve: false, grub_device: false, type: partition, id: lvm-disk}
+##Creating Volume groups
+    - {name: safesquid-vg, devices: [lvm-disk], preserve: false, type: lvm_volgroup, id: lvm_volgroup-0}
+#LVM Partitios
+    - {id: LVM-partitions}
+###########################################################
+##BIOS Boot Storage layout
+  storage_BIOS:
+    swap: {swap: 0}
+    config: 
+##Select Disk
+    - {ptable: gpt, match: {}, wipe: superblock-recursive, preserve: false, name: '', grub_device: true, type: disk, id: disk-sda}
+    - {id: additional-disks}
+##Grub Disk
+    - {device: disk-sda, size: 1M, flag: bios_grub, number: 1, wipe: superblock, preserve: false,grub_device: false, type: partition, id: partition-00}
+#BIOS_Boot /boot
+    - {device: disk-sda, size: BOOT_SIZE, number: 2, wipe: superblock, flag: '', grub_device: false, type: partition, id: partition-0}
+    - {fstype: ext4, volume: partition-0, preserve: false, type: format, id: format-00}
+    - {path: /boot, device: format-00, type: mount, id: mount-00}
+##Partition to be used for LVM
+    - {device: disk-sda, size: -1, wipe: superblock, flag: '', number: 3, preserve: false, grub_device: false, type: partition, id: lvm-disk}
+##Creating Volume groups
+    - {name: safesquid-vg, devices: [lvm-disk], preserve: false, type: lvm_volgroup, id: lvm_volgroup-0}
+#LVM Partitios
+    - {id: LVM-partitions}
+###########################################################
+#updates- (all and securtiy)
+#Perform all upgrades.
+  updates: all
+#Execute commands once OS has been installed via cloud-init.
+  user-data:
+    runcmd:
+#Expire password for user administrator.
+      - chage -d 0 administrator
+#Remove snapd and remove residue files 
+      - apt-get remove snapd -y && apt-get autoremove -y && apt-get autoclean -y
+      - rm -rf /root/snap /var/snap /var/lib/snapd
+#Reconfigure resolvconf to use 127.0.0.1 as it's nameserver
+      - dpkg-reconfigure -u resolvconf
+#Restore safesquid's /etc/issue.
+      - mv /usr/local/src/issue /etc/issue
+#Disable cloud-init.
+      - touch /etc/cloud/cloud-init.disabled
+#reboot after cloud-init has finalized.
+    power_state:
+      mode: reboot
